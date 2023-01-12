@@ -197,7 +197,7 @@ const PLUGIN: DB_misc_t = DB_misc_t {
         You should have received a copy of the GNU General Public License\n\
         along with this program.  If not, see <https://www.gnu.org/licenses/>.\n\
         \0".as_ptr() as *const c_char,
-        website: "\0".as_ptr() as *const c_char,  // TODO: add github repo here
+        website: "https://github.com/Tassadaritze/deadbeef_now_playing_to_file\0".as_ptr() as *const c_char,
         start: START,
         stop: STOP,
         message: MESSAGE,
