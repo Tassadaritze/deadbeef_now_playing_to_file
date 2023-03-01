@@ -20,7 +20,7 @@ fn format() -> Result<String, Box<dyn Error>> {
 
     let now_playing = PlayingTrack::new();
     if now_playing.0.is_null() {
-        return Err(Box::new(NowPlayingError(String::from("no song playing"))));
+        return Ok("no song playing".to_string());
     }
 
     let now_playing_playlist = PlayingPlaylist::new();
