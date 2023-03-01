@@ -15,43 +15,40 @@ const MAX_LEN: u16 = 256;
 static mut IS_PLUGIN_ENABLED: bool = false;
 static mut DEADBEEF: Option<&DB_functions_t> = None;
 
-unsafe fn format() -> Result<String, Box<dyn Error>> {
-    let deadbeef = match DEADBEEF {
-        Some(val) => val,
-        None => {
-            return Err(Box::new(NowPlayingError(String::from(
-                "couldn't get plugin api pointer",
-            ))))
-        }
-    };
+fn format() -> Result<String, Box<dyn Error>> {
+    let deadbeef = unsafe { DEADBEEF.try_get_api()? };
 
-    // assuming that if DEADBEEF is not null, then none of its functions are null
-    let now_playing = deadbeef.streamer_get_playing_track_safe.unwrap()();
-    if now_playing.is_null() {
+    let now_playing = PlayingTrack::new();
+    if now_playing.0.is_null() {
         return Err(Box::new(NowPlayingError(String::from("no song playing"))));
     }
 
-    let now_playing_playlist = deadbeef.plt_get_curr.unwrap()();
+    let now_playing_playlist = PlayingPlaylist::new();
 
     let mut buf: [c_char; MAX_LEN as usize] = [0; MAX_LEN as usize];
-    deadbeef.conf_get_str.unwrap()(
-        CStr::from_bytes_with_nul(b"now_playing_to_file.format\0")
-            .unwrap()
-            .as_ptr(),
-        CStr::from_bytes_with_nul(b"%title%$if(%ispaused%,' ('paused')')\0")
-            .unwrap()
-            .as_ptr(),
-        buf.as_mut_ptr(),
-        MAX_LEN as c_int,
-    );
+    unsafe {
+        deadbeef.conf_get_str.unwrap()(
+            CStr::from_bytes_with_nul(b"now_playing_to_file.format\0")
+                .unwrap()
+                .as_ptr(),
+            CStr::from_bytes_with_nul(b"%title%$if(%ispaused%,' ('paused')')\0")
+                .unwrap()
+                .as_ptr(),
+            buf.as_mut_ptr(),
+            MAX_LEN as c_int,
+        );
+    }
 
-    let script = deadbeef.tf_compile.unwrap()(buf.as_ptr());
+    let script = FormatScript::new(&buf);
+    if script.0.is_null() {
+        return Ok(String::new());
+    }
 
     let mut context = ddb_tf_context_t {
         _size: mem::size_of::<ddb_tf_context_t>() as c_int,
         flags: 0,
-        it: now_playing,
-        plt: now_playing_playlist,
+        it: now_playing.0,
+        plt: now_playing_playlist.0,
         idx: 0,
         id: 0,
         iter: PL_MAIN as c_int,
@@ -60,48 +57,35 @@ unsafe fn format() -> Result<String, Box<dyn Error>> {
     };
 
     let mut out: [c_char; MAX_LEN as usize] = [0; MAX_LEN as usize];
-    if !script.is_null() {
-        deadbeef.tf_eval.unwrap()(&mut context, script, out.as_mut_ptr(), MAX_LEN as c_int);
+    unsafe {
+        deadbeef.tf_eval.unwrap()(&mut context, script.0, out.as_mut_ptr(), MAX_LEN as c_int);
     }
 
-    let out = String::from(CStr::from_ptr(out.as_ptr()).to_str()?);
-
-    deadbeef.pl_item_unref.unwrap()(now_playing);
-    if !now_playing_playlist.is_null() {
-        deadbeef.plt_unref.unwrap()(now_playing_playlist)
-    }
-    if !script.is_null() {
-        deadbeef.tf_free.unwrap()(script)
-    }
+    let out = unsafe { String::from(CStr::from_ptr(out.as_ptr()).to_str()?) };
 
     Ok(out)
 }
 
-unsafe fn write_to_file() -> Result<(), Box<dyn Error>> {
-    let deadbeef = match DEADBEEF {
-        Some(val) => val,
-        None => {
-            return Err(Box::new(NowPlayingError(String::from(
-                "couldn't get plugin api pointer",
-            ))))
-        }
-    };
+fn write_to_file() -> Result<(), Box<dyn Error>> {
+    let deadbeef = unsafe { DEADBEEF.try_get_api()? };
 
     let mut buf: [c_char; MAX_LEN as usize] = [0; MAX_LEN as usize];
-    deadbeef.conf_get_str.unwrap()(
-        CStr::from_bytes_with_nul(b"now_playing_to_file.out_path\0")
-            .unwrap()
-            .as_ptr(),
-        CStr::from_bytes_with_nul(b"\0").unwrap().as_ptr(),
-        buf.as_mut_ptr(),
-        MAX_LEN as c_int,
-    );
+    unsafe {
+        deadbeef.conf_get_str.unwrap()(
+            CStr::from_bytes_with_nul(b"now_playing_to_file.out_path\0")
+                .unwrap()
+                .as_ptr(),
+            CStr::from_bytes_with_nul(b"\0").unwrap().as_ptr(),
+            buf.as_mut_ptr(),
+            MAX_LEN as c_int,
+        );
+    }
 
     if buf[0] == 0 {
         return Ok(());
     }
 
-    let path = CStr::from_ptr(buf.as_ptr()).to_str()?;
+    let path = unsafe { CStr::from_ptr(buf.as_ptr()).to_str()? };
     std::fs::write(path, format()?)?;
 
     Ok(())
@@ -233,3 +217,87 @@ impl Display for NowPlayingError {
 }
 
 impl Error for NowPlayingError {}
+
+trait TryAPI {
+    fn try_get_api(&self) -> Result<&DB_functions_t, Box<dyn Error>>;
+}
+
+impl TryAPI for Option<&DB_functions_t> {
+    fn try_get_api(&self) -> Result<&DB_functions_t, Box<dyn Error>> {
+        unsafe {
+            match DEADBEEF {
+                Some(val) => Ok(val),
+                None => Err(Box::new(NowPlayingError(String::from(
+                    "couldn't get plugin api pointer",
+                )))),
+            }
+        }
+    }
+}
+
+#[repr(C)]
+struct PlayingTrack(*mut ddb_playItem_t);
+
+impl PlayingTrack {
+    fn new() -> Self {
+        unsafe {
+            Self(DEADBEEF
+                .try_get_api()
+                .unwrap()
+                .streamer_get_playing_track_safe
+                .unwrap()())
+        }
+    }
+}
+
+impl Drop for PlayingTrack {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                DEADBEEF.try_get_api().unwrap().pl_item_unref.unwrap()(self.0);
+            }
+        }
+    }
+}
+
+#[repr(C)]
+struct PlayingPlaylist(*mut ddb_playlist_t);
+
+impl PlayingPlaylist {
+    fn new() -> Self {
+        unsafe { Self(DEADBEEF.try_get_api().unwrap().plt_get_curr.unwrap()()) }
+    }
+}
+
+impl Drop for PlayingPlaylist {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                DEADBEEF.try_get_api().unwrap().plt_unref.unwrap()(self.0);
+            }
+        }
+    }
+}
+
+#[repr(C)]
+struct FormatScript(*mut c_char);
+
+impl FormatScript {
+    fn new(buf: &[c_char]) -> Self {
+        unsafe {
+            Self(DEADBEEF.try_get_api().unwrap().tf_compile.unwrap()(
+                buf.as_ptr(),
+            ))
+        }
+    }
+}
+
+impl Drop for FormatScript {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                DEADBEEF.try_get_api().unwrap().tf_free.unwrap()(self.0);
+            }
+        }
+    }
+}
